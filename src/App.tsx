@@ -520,6 +520,106 @@ export default function App() {
           </div>
         </section>
 
+        {/* How Diagnostics Work: MX, SPF, DKIM, DMARC */}
+        <section
+          aria-labelledby="how-diagnostics-work-heading"
+          className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 px-5 py-3.5 dark:border-slate-800">
+            <h2
+              id="how-diagnostics-work-heading"
+              className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100"
+            >
+              So funktioniert die Diagnose
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Zusammenspiel der vier DNS-Standards für sichere E-Mail-Zustellbarkeit
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 divide-y divide-slate-100 sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4 lg:divide-x dark:divide-slate-800">
+            <div className="flex flex-col justify-between gap-2.5 p-5">
+              <div>
+                <h3 className="font-display text-xs font-semibold text-slate-900 dark:text-slate-100">
+                  01. MX (Mail Exchanger)
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                  Benennt die zuständigen Ziel-Mailserver Ihrer Domain inklusive Priorität. Passende IPv4/IPv6-Ziele und ein bestätigter Reverse-DNS-Eintrag (FCrDNS) sichern die Annahme durch Gegenstellen.
+                </p>
+              </div>
+              {report && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectModule('mx')}
+                  className="self-start text-xs font-medium text-blue-600 hover:underline underline-offset-4 dark:text-blue-400 whitespace-nowrap shrink-0"
+                >
+                  MX-Ergebnis ansehen
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-col justify-between gap-2.5 border-t border-slate-100 p-5 sm:border-t-0 sm:border-l lg:border-l-0 dark:border-slate-800">
+              <div>
+                <h3 className="font-display text-xs font-semibold text-slate-900 dark:text-slate-100">
+                  02. SPF (Sender Policy)
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                  Legt per DNS-TXT-Eintrag fest, welche Server und Netze E-Mails für Ihre Domain versenden dürfen. Das verhindert einfaches Absender-Spoofing und prüft das Limit von 10 DNS-Lookups.
+                </p>
+              </div>
+              {report && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectModule('spf')}
+                  className="self-start text-xs font-medium text-blue-600 hover:underline underline-offset-4 dark:text-blue-400 whitespace-nowrap shrink-0"
+                >
+                  SPF-Ergebnis ansehen
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-col justify-between gap-2.5 border-t border-slate-100 p-5 lg:border-t-0 dark:border-slate-800">
+              <div>
+                <h3 className="font-display text-xs font-semibold text-slate-900 dark:text-slate-100">
+                  03. DKIM (Signatur)
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                  Signiert ausgehende Nachrichten kryptografisch. Über den unter einem Selektor veröffentlichten öffentlichen Schlüssel prüft der Empfänger Authentizität und Unverändertheit der Mail.
+                </p>
+              </div>
+              {report && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectModule('dkim')}
+                  className="self-start text-xs font-medium text-blue-600 hover:underline underline-offset-4 dark:text-blue-400 whitespace-nowrap shrink-0"
+                >
+                  DKIM-Ergebnis ansehen
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-col justify-between gap-2.5 border-t border-slate-100 p-5 sm:border-l lg:border-t-0 lg:border-l-0 dark:border-slate-800">
+              <div>
+                <h3 className="font-display text-xs font-semibold text-slate-900 dark:text-slate-100">
+                  04. DMARC (Richtlinie)
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                  Verbindet SPF und DKIM über Domain-Alignment und weist Empfänger an, wie gefälschte Mails behandelt werden sollen (beobachten, Quarantäne oder Ablehnung) inklusive Zustellberichten.
+                </p>
+              </div>
+              {report && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectModule('dmarc')}
+                  className="self-start text-xs font-medium text-blue-600 hover:underline underline-offset-4 dark:text-blue-400 whitespace-nowrap shrink-0"
+                >
+                  DMARC-Ergebnis ansehen
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* Active Target Metadata Line + Summary Grid */}
         {report && (
           <>
