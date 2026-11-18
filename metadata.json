@@ -1,0 +1,6 @@
+{
+  "name": "Mail Prüfsystem",
+  "description": "Live-Diagnosesystem für E-Mail-Infrastruktur: Prüft MX, SPF, DKIM, DMARC, Mail-Ports, TLS und Blacklists in Echtzeit.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
