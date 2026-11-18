@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Plus, Search } from 'lucide-react';
 import type { DkimSelectorResult, FullCheckReport } from '../types/mailcheck';
+import { probeDkimSelectorDoh } from '../lib/dohDiagnostics';
 import { StatusIndicator } from './StatusIndicator';
 import { CopyButton } from './CopyButton';
 
 interface DnsAuthSectionProps {
   report: FullCheckReport;
   isLoading: boolean;
+  backendMode?: 'node' | 'static';
   onAddDkimResult: (result: DkimSelectorResult) => void;
 }
 
@@ -19,7 +21,7 @@ function SkeletonBlock() {
   );
 }
 
-export function DnsAuthSection({ report, isLoading, onAddDkimResult }: DnsAuthSectionProps) {
+export function DnsAuthSection({ report, isLoading, backendMode = 'node', onAddDkimResult }: DnsAuthSectionProps) {
   const [customSelector, setCustomSelector] = useState('');
   const [probingSelector, setProbingSelector] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -28,24 +30,48 @@ export function DnsAuthSection({ report, isLoading, onAddDkimResult }: DnsAuthSe
     e.preventDefault();
     const sel = customSelector.trim().toLowerCase();
     if (!sel) return;
+    if (!/^[a-z0-9._-]{1,63}$/.test(sel)) {
+      setProbeError('Ungültiges Selektor-Format.');
+      return;
+    }
     setProbingSelector(true);
     setProbeError(null);
 
     try {
+      if (backendMode === 'static') {
+        const dohResult = await probeDkimSelectorDoh(report.domain, sel);
+        onAddDkimResult(dohResult);
+        setCustomSelector('');
+        return;
+      }
+
       const res = await fetch('/api/dkim/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: report.domain, selector: sel }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setProbeError(data.error ?? 'Selektor-Abfrage fehlgeschlagen.');
+      const contentType = res.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) {
+          setProbeError(data.error ?? 'Selektor-Abfrage fehlgeschlagen.');
+        } else {
+          onAddDkimResult(data as DkimSelectorResult);
+          setCustomSelector('');
+        }
       } else {
-        onAddDkimResult(data as DkimSelectorResult);
+        const dohResult = await probeDkimSelectorDoh(report.domain, sel);
+        onAddDkimResult(dohResult);
         setCustomSelector('');
       }
     } catch {
-      setProbeError('Netzwerkfehler bei der DKIM-Abfrage.');
+      try {
+        const dohResult = await probeDkimSelectorDoh(report.domain, sel);
+        onAddDkimResult(dohResult);
+        setCustomSelector('');
+      } catch {
+        setProbeError('Netzwerkfehler bei der DKIM-Abfrage.');
+      }
     } finally {
       setProbingSelector(false);
     }

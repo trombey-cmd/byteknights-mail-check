@@ -1352,19 +1352,24 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  app.get('/runtime.json', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ mode: 'node', ports: true });
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  app.get('/api/check/stream', async (req, res) => {
-    const rawTarget = String(req.query.target ?? '').trim();
-    const rawSelectors = String(req.query.selectors ?? '').trim();
-    const rawCustomHost = String(req.query.host ?? '').trim();
-
+  const runDiagnosticPipeline = async (
+    rawTarget: string,
+    rawSelectors: string,
+    rawCustomHost: string,
+    sendEvent: (event: string, data: unknown) => void
+  ): Promise<{ error?: string }> => {
     const parsed = normalizeTarget(rawTarget);
     if (!parsed.domain || !isValidDomainOrHost(parsed.domain)) {
-      res.status(400).json({ error: 'Bitte geben Sie eine gültige Domain, E-Mail-Adresse oder einen Hostnamen ein.' });
-      return;
+      return { error: 'Bitte geben Sie eine gültige Domain, E-Mail-Adresse oder einen Hostnamen ein.' };
     }
 
     const customSelectors = rawSelectors
@@ -1373,22 +1378,6 @@ async function startServer() {
       .filter((s) => /^[a-z0-9._-]{1,63}$/.test(s));
 
     const customHost = rawCustomHost && isValidDomainOrHost(rawCustomHost) ? rawCustomHost : null;
-
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-
-    let closed = false;
-    req.on('close', () => {
-      closed = true;
-    });
-
-    const sendEvent = (event: string, data: unknown) => {
-      if (closed) return;
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
-
     const startTime = Date.now();
     const checkId = crypto.randomUUID();
 
@@ -1466,6 +1455,63 @@ async function startServer() {
       recommendations,
     });
 
+    return {};
+  };
+
+  app.get('/api/check/stream', async (req, res) => {
+    const rawTarget = String(req.query.target ?? '').trim();
+    const rawSelectors = String(req.query.selectors ?? '').trim();
+    const rawCustomHost = String(req.query.host ?? '').trim();
+
+    const parsed = normalizeTarget(rawTarget);
+    if (!parsed.domain || !isValidDomainOrHost(parsed.domain)) {
+      res.status(400).json({ error: 'Bitte geben Sie eine gültige Domain, E-Mail-Adresse oder einen Hostnamen ein.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    let closed = false;
+    req.on('close', () => {
+      closed = true;
+    });
+
+    await runDiagnosticPipeline(rawTarget, rawSelectors, rawCustomHost, (event, data) => {
+      if (closed) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    });
+
+    res.end();
+  });
+
+  app.post('/api/check/ndjson', async (req, res) => {
+    const rawTarget = String(req.body?.target ?? '').trim();
+    const rawSelectors = String(req.body?.selectors ?? '').trim();
+    const rawCustomHost = String(req.body?.host ?? '').trim();
+
+    const parsed = normalizeTarget(rawTarget);
+    if (!parsed.domain || !isValidDomainOrHost(parsed.domain)) {
+      res.status(400).json({ error: 'Bitte geben Sie eine gültige Domain, E-Mail-Adresse oder einen Hostnamen ein.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.flushHeaders?.();
+
+    let closed = false;
+    req.on('close', () => {
+      closed = true;
+    });
+
+    await runDiagnosticPipeline(rawTarget, rawSelectors, rawCustomHost, (event, data) => {
+      if (closed) return;
+      res.write(`${JSON.stringify({ event, data })}\n`);
+    });
+
     res.end();
   });
 
@@ -1492,6 +1538,10 @@ async function startServer() {
 
     const result = await checkPorts(host);
     res.json(result);
+  });
+
+  app.all('/api/*', (_req, res) => {
+    res.status(404).json({ error: 'API-Endpunkt nicht gefunden.' });
   });
 
   if (process.env.NODE_ENV !== 'production') {

@@ -7,10 +7,11 @@ interface PortsSectionProps {
   ports: PortsModuleResult | null;
   domain: string;
   isLoading: boolean;
+  backendMode?: 'node' | 'static';
   onUpdatePorts: (next: PortsModuleResult) => void;
 }
 
-export function PortsSection({ ports, domain, isLoading, onUpdatePorts }: PortsSectionProps) {
+export function PortsSection({ ports, domain, isLoading, backendMode = 'node', onUpdatePorts }: PortsSectionProps) {
   const [customHost, setCustomHost] = useState('');
   const [probing, setProbing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,6 +20,10 @@ export function PortsSection({ ports, domain, isLoading, onUpdatePorts }: PortsS
     e.preventDefault();
     const target = customHost.trim();
     if (!target) return;
+    if (backendMode === 'static') {
+      setError('TCP-Portscan erfordert ein laufendes Node.js-Backend (im rein statischen Hosting nicht verfügbar).');
+      return;
+    }
     setProbing(true);
     setError(null);
 
@@ -28,6 +33,11 @@ export function PortsSection({ ports, domain, isLoading, onUpdatePorts }: PortsS
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: target }),
       });
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        setError('TCP-Portscan erfordert ein laufendes Node.js-Backend (im rein statischen Hosting nicht verfügbar).');
+        return;
+      }
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? 'Port-Prüfung fehlgeschlagen.');

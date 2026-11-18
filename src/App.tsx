@@ -11,6 +11,11 @@ import type {
   RecommendationItem,
   SpfModuleResult,
 } from './types/mailcheck';
+import {
+  isValidTarget,
+  normalizeTargetInput,
+  runLiveDohCheck,
+} from './lib/dohDiagnostics';
 import { ModuleSummaryGrid, type ModuleKey } from './components/ModuleSummaryGrid';
 import { DnsAuthSection } from './components/DnsAuthSection';
 import { PortsSection } from './components/PortsSection';
@@ -53,7 +58,9 @@ export default function App() {
     }
   });
 
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const [backendMode, setBackendMode] = useState<'node' | 'static'>('node');
+  const runtimeModeRef = useRef<'node' | 'static' | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const domainInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -68,9 +75,9 @@ export default function App() {
   }, [darkMode]);
 
   const stopActiveStream = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   }, []);
 
@@ -87,10 +94,16 @@ export default function App() {
   }, []);
 
   const runLiveCheck = useCallback(
-    (overrideTarget?: string) => {
+    async (overrideTarget?: string) => {
       const rawTarget = (overrideTarget ?? targetInput).trim();
       if (!rawTarget) {
         setErrorMsg('Bitte geben Sie eine Domain, E-Mail-Adresse oder einen Hostnamen ein.');
+        return;
+      }
+
+      const normalized = normalizeTargetInput(rawTarget);
+      if (!normalized.domain || !isValidTarget(normalized.domain)) {
+        setErrorMsg('Bitte geben Sie eine gültige Domain, E-Mail-Adresse oder einen Hostnamen ein.');
         return;
       }
 
@@ -101,108 +114,175 @@ export default function App() {
         setTargetInput(overrideTarget);
       }
 
-      const params = new URLSearchParams({ target: rawTarget });
-      if (selectorsInput.trim()) {
-        params.set('selectors', selectorsInput.trim());
-      }
-      if (customHostInput.trim()) {
-        params.set('host', customHostInput.trim());
-      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
-      const es = new EventSource(`/api/check/stream?${params.toString()}`);
-      eventSourceRef.current = es;
-
-      es.addEventListener('init', (evt) => {
-        const data = JSON.parse((evt as MessageEvent).data) as {
-          id: string;
-          input: string;
-          domain: string;
-          customHost: string | null;
-          customSelectors: string[];
-          startedAt: string;
-        };
-        recordRecentDomain(data.domain);
-        setReport({
-          id: data.id,
-          input: data.input,
-          domain: data.domain,
-          customHost: data.customHost,
-          customSelectors: data.customSelectors,
-          startedAt: data.startedAt,
-          completedAt: null,
-          totalDurationMs: null,
-          mx: null,
-          spf: null,
-          dkim: null,
-          dmarc: null,
-          ports: null,
-          blacklists: null,
-          recommendations: [],
-        });
-      });
-
-      es.addEventListener('mx', (evt) => {
-        const mx = JSON.parse((evt as MessageEvent).data) as MxModuleResult;
-        setReport((prev) => (prev ? { ...prev, mx } : prev));
-      });
-
-      es.addEventListener('spf', (evt) => {
-        const spf = JSON.parse((evt as MessageEvent).data) as SpfModuleResult;
-        setReport((prev) => (prev ? { ...prev, spf } : prev));
-      });
-
-      es.addEventListener('dkim', (evt) => {
-        const dkim = JSON.parse((evt as MessageEvent).data) as DkimModuleResult;
-        setReport((prev) => (prev ? { ...prev, dkim } : prev));
-      });
-
-      es.addEventListener('dmarc', (evt) => {
-        const dmarc = JSON.parse((evt as MessageEvent).data) as DmarcModuleResult;
-        setReport((prev) => (prev ? { ...prev, dmarc } : prev));
-      });
-
-      es.addEventListener('ports', (evt) => {
-        const ports = JSON.parse((evt as MessageEvent).data) as PortsModuleResult;
-        setReport((prev) => (prev ? { ...prev, ports } : prev));
-      });
-
-      es.addEventListener('blacklists', (evt) => {
-        const blacklists = JSON.parse((evt as MessageEvent).data) as BlacklistModuleResult;
-        setReport((prev) => (prev ? { ...prev, blacklists } : prev));
-      });
-
-      es.addEventListener('complete', (evt) => {
-        const payload = JSON.parse((evt as MessageEvent).data) as {
-          completedAt: string;
-          totalDurationMs: number;
-          recommendations: RecommendationItem[];
-        };
-        setReport((prev) =>
-          prev
-            ? {
-                ...prev,
-                completedAt: payload.completedAt,
-                totalDurationMs: payload.totalDurationMs,
-                recommendations: payload.recommendations,
-              }
-            : prev
-        );
-        setIsLoading(false);
-        es.close();
-        eventSourceRef.current = null;
-      });
-
-      es.onerror = () => {
-        setIsLoading(false);
-        es.close();
-        eventSourceRef.current = null;
-        setReport((prev) => {
-          if (!prev) {
-            setErrorMsg('Die Live-Prüfung konnte nicht gestartet werden. Bitte überprüfen Sie Ihre Eingabe.');
-          }
-          return prev;
-        });
+      const handleEvent = (event: string, data: unknown) => {
+        if (event === 'init') {
+          const meta = data as {
+            id: string;
+            input: string;
+            domain: string;
+            customHost: string | null;
+            customSelectors: string[];
+            startedAt: string;
+          };
+          recordRecentDomain(meta.domain);
+          setReport({
+            id: meta.id,
+            input: meta.input,
+            domain: meta.domain,
+            customHost: meta.customHost,
+            customSelectors: meta.customSelectors,
+            startedAt: meta.startedAt,
+            completedAt: null,
+            totalDurationMs: null,
+            mx: null,
+            spf: null,
+            dkim: null,
+            dmarc: null,
+            ports: null,
+            blacklists: null,
+            recommendations: [],
+          });
+        } else if (event === 'mx') {
+          setReport((prev) => (prev ? { ...prev, mx: data as MxModuleResult } : prev));
+        } else if (event === 'spf') {
+          setReport((prev) => (prev ? { ...prev, spf: data as SpfModuleResult } : prev));
+        } else if (event === 'dkim') {
+          setReport((prev) => (prev ? { ...prev, dkim: data as DkimModuleResult } : prev));
+        } else if (event === 'dmarc') {
+          setReport((prev) => (prev ? { ...prev, dmarc: data as DmarcModuleResult } : prev));
+        } else if (event === 'ports') {
+          setReport((prev) => (prev ? { ...prev, ports: data as PortsModuleResult } : prev));
+        } else if (event === 'blacklists') {
+          setReport((prev) => (prev ? { ...prev, blacklists: data as BlacklistModuleResult } : prev));
+        } else if (event === 'complete') {
+          const payload = data as {
+            completedAt: string;
+            totalDurationMs: number;
+            recommendations: RecommendationItem[];
+          };
+          setReport((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  completedAt: payload.completedAt,
+                  totalDurationMs: payload.totalDurationMs,
+                  recommendations: payload.recommendations,
+                }
+              : prev
+          );
+        }
       };
+
+      const runDohFallback = async () => {
+        const selectors = selectorsInput
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        const host = customHostInput.trim() || null;
+
+        await runLiveDohCheck(
+          rawTarget,
+          selectors,
+          host,
+          {
+            onInit: (meta) => handleEvent('init', meta),
+            onMx: (mx) => handleEvent('mx', mx),
+            onSpf: (spf) => handleEvent('spf', spf),
+            onDkim: (dkim) => handleEvent('dkim', dkim),
+            onDmarc: (dmarc) => handleEvent('dmarc', dmarc),
+            onPorts: (ports) => handleEvent('ports', ports),
+            onBlacklists: (bl) => handleEvent('blacklists', bl),
+            onComplete: (payload) => handleEvent('complete', payload),
+          },
+          controller.signal
+        );
+      };
+
+      const detectRuntimeMode = async (): Promise<'node' | 'static'> => {
+        if (runtimeModeRef.current) return runtimeModeRef.current;
+        try {
+          const rtRes = await fetch('/runtime.json', { cache: 'no-store' });
+          const ct = rtRes.headers.get('content-type') ?? '';
+          if (rtRes.ok && ct.includes('application/json')) {
+            const rt = (await rtRes.json()) as { mode?: string };
+            const resolved: 'node' | 'static' = rt.mode === 'node' ? 'node' : 'static';
+            runtimeModeRef.current = resolved;
+            setBackendMode(resolved);
+            return resolved;
+          }
+        } catch {
+          // fallback to static DoH if runtime descriptor cannot be read
+        }
+        runtimeModeRef.current = 'static';
+        setBackendMode('static');
+        return 'static';
+      };
+
+      try {
+        const mode = await detectRuntimeMode();
+        if (controller.signal.aborted) return;
+
+        if (mode === 'static') {
+          await runDohFallback();
+          return;
+        }
+
+        const res = await fetch('/api/check/ndjson', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: rawTarget,
+            selectors: selectorsInput.trim(),
+            host: customHostInput.trim(),
+          }),
+          signal: controller.signal,
+        });
+
+        const contentType = res.headers.get('content-type') ?? '';
+        if (res.ok && contentType.includes('application/x-ndjson') && res.body) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              const parsedLine = JSON.parse(trimmed) as { event: string; data: unknown };
+              handleEvent(parsedLine.event, parsedLine.data);
+            }
+          }
+          if (buffer.trim()) {
+            const parsedLine = JSON.parse(buffer.trim()) as { event: string; data: unknown };
+            handleEvent(parsedLine.event, parsedLine.data);
+          }
+        } else if (res.status === 400 && contentType.includes('application/json')) {
+          const errJson = (await res.json()) as { error?: string };
+          setErrorMsg(errJson.error ?? 'Ungültige Eingabe.');
+        } else {
+          await runDohFallback();
+        }
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+        try {
+          await runDohFallback();
+        } catch {
+          setErrorMsg('Die Live-Prüfung konnte nicht durchgeführt werden. Bitte prüfen Sie Ihre Netzwerkverbindung.');
+        }
+      } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+          setIsLoading(false);
+        }
+      }
     },
     [targetInput, selectorsInput, customHostInput, stopActiveStream, recordRecentDomain]
   );
@@ -682,6 +762,7 @@ export default function App() {
               <DnsAuthSection
                 report={report}
                 isLoading={isLoading}
+                backendMode={backendMode}
                 onAddDkimResult={handleAddDkimResult}
               />
             )}
@@ -691,6 +772,7 @@ export default function App() {
                 ports={report.ports}
                 domain={report.domain}
                 isLoading={isLoading}
+                backendMode={backendMode}
                 onUpdatePorts={handleUpdatePorts}
               />
             )}
